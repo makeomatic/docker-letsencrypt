@@ -1,0 +1,1 @@
+@daily root /entrypoint.sh auto-renew >> /var/log/cron.log 2>&1
