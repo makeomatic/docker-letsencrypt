@@ -168,7 +168,7 @@ copy_file_to_location() { # copies a file, using scp if required.
       domain=$(dirname "$from")
       agent=$(echo "$to"| awk -F: '{print "http://"$2":"$3"/v1/kv"$4}')
 			debug "consul KV to $agent/$domain/$cert from @$from"
-      response=$($CURL -X PUT --data @"$from" "$agent/$domain/$cert")
+      response=$(curl -X PUT --data @"$from" "$agent/$domain/$cert")
       debug response "$response"
 		elif [[ "${to:0:4}" == "ftp:" ]] ; then
 			if [[ "$cert" != "challenge token" ]] ; then
