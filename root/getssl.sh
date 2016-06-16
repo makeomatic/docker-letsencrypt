@@ -168,12 +168,7 @@ copy_file_to_location() { # copies a file, using scp if required.
       agent=$(echo "$to"| awk -F: '{print "http://"$2":"$3"/v1/kv"$4}')
       body=$(cat $from | base64 | tr -d '\n')
       response=$($CURL -X PUT --data "$body" "$agent/$domain/$cert")
-      code=$(echo $response | grep -Eo '"status":[ ]*[0-9]*' | cut -d : -f 2)
       debug response "$response"
-    	debug code "$code"
-      if [[ "$code" != "200" ]] ; then
-        error_exit "could not upload $cert to consul $agent"
-      fi
 		elif [[ "${to:0:4}" == "ftp:" ]] ; then
 			if [[ "$cert" != "challenge token" ]] ; then
 				error_exit "ftp is not a sercure method for copying certificates or keys"
