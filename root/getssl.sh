@@ -166,7 +166,7 @@ copy_file_to_location() { # copies a file, using scp if required.
       # consul KV implementation
       domain=$(dirname "$from")
       agent=$(echo "$to"| awk -F: '{print "http://"$2":"$3"/v1/kv"$4}')
-      body=$(cat $from | base64 | tr -d '\n')
+      body="@$from"
       response=$($CURL -X PUT --data "$body" "$agent/$domain/$cert")
       debug response "$response"
 		elif [[ "${to:0:4}" == "ftp:" ]] ; then
