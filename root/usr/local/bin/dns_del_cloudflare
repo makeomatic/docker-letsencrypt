@@ -4,6 +4,11 @@
 email="${CLOUDFLARE_EMAIL}"
 key="${CLOUDFLARE_TOKEN}"
 
+if [ ! -n "$email" ] || [ ! -n "$key" ]; then
+  echo "CLOUDFLARE_EMAIL & CLOUDFLARE_TOKEN must be set"
+  exit 128
+fi
+
 fulldomain="$1"
 
 NumParts=$(echo "$fulldomain" | awk -F"." '{print NF}')

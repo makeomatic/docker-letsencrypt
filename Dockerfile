@@ -5,7 +5,10 @@ RUN \
   && apk --no-cache add \
     bash \
     openssl \
-    curl
+    curl \
+    grep \
+    drill \
+    coreutils
 
 ENV \
   LE_EMAIL="" \

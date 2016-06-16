@@ -4,6 +4,11 @@
 email="${CLOUDFLARE_EMAIL}"
 key="${CLOUDFLARE_TOKEN}"
 
+if [ ! -n "$email" ] || [ ! -n "$key" ]; then
+  echo "CLOUDFLARE_EMAIL & CLOUDFLARE_TOKEN must be set"
+  exit 128
+fi
+
 fulldomain="$1"
 token="$2"
 
@@ -20,7 +25,6 @@ response=$(curl --silent -X GET "https://api.cloudflare.com/client/v4/zones?name
   -H "X-Auth-Email: ${email}" -H "X-Auth-Key: ${key}" -H "Content-Type: application/json")
 
 domain_id=$(echo "$response" | egrep -o  "{[^{]*\"name\":\"${domain}\"[^}]*"|grep -oP '\"id\":"\K[^"]+')
-
 response=$(curl --silent -X POST "https://api.cloudflare.com/client/v4/zones/${domain_id}/dns_records" \
   -H "X-Auth-Email: ${email}" -H "X-Auth-Key: ${key}" -H "Content-Type: application/json" \
   --data "{\"type\":\"TXT\",\"name\":\"${txtname}\",\"content\":\"$token\",\"ttl\":300}")

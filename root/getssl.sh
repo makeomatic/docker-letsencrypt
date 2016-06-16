@@ -26,7 +26,7 @@ ACCOUNT_KEY_LENGTH=4096
 WORKING_DIR=/.getssl
 DOMAIN_KEY_LENGTH=4096
 SSLCONF="$(openssl version -d | cut -d\" -f2)/openssl.cnf"
-VALIDATE_VIA_DNS=""
+VALIDATE_VIA_DNS="${LE_VALIDATE_VIA_DNS:-false}"
 RELOAD_CMD=""
 RENEW_ALLOW="30"
 PRIVATE_KEY_ALG="rsa"
@@ -34,7 +34,7 @@ SERVER_TYPE="webserver"
 CHECK_REMOTE="true"
 DNS_WAIT=10
 DNS_EXTRA_WAIT=""
-PUBLIC_DNS_SERVER=""
+PUBLIC_DNS_SERVER="${PUBLIC_DNS_SERVER:-8.8.8.8}"
 ORIG_UMASK=$(umask)
 _USE_DEBUG=0
 _CREATE_CONFIG=0
@@ -151,6 +151,7 @@ copy_file_to_location() { # copies a file, using scp if required.
 	cert=$1	 # descriptive name, just used for display
 	from=$2	 # current file location
 	to=$3		 # location to move file to.
+
 	if [ ! -z "$to" ]; then
 		info "copying $cert to $to"
 		debug "copying from $from to $to"
@@ -161,6 +162,18 @@ copy_file_to_location() { # copies a file, using scp if required.
 				error_exit "problem copying file to the server using scp.
 				scp $from ${to:4}"
 			fi
+    elif [[ "${to:0:7}" == "consul:" ]] ; then
+      # consul KV implementation
+      domain=$(dirname "$from")
+      agent=$(echo "$to"| awk -F: '{print "http://"$2":"$3"/v1/kv"$4}')
+      body=$(cat $from | base64 | tr -d '\n')
+      response=$($CURL -X PUT --data "$body" "$agent/$domain/$cert")
+      code=$(echo $response | grep -Eo '"status":[ ]*[0-9]*' | cut -d : -f 2)
+      debug response "$response"
+    	debug code "$code"
+      if [[ "$code" != "200" ]] ; then
+        error_exit "could not upload $cert to consul $agent"
+      fi
 		elif [[ "${to:0:4}" == "ftp:" ]] ; then
 			if [[ "$cert" != "challenge token" ]] ; then
 				error_exit "ftp is not a sercure method for copying certificates or keys"
@@ -483,8 +496,8 @@ write_getssl_template() { # write out the main template file
 			VALIDATE_VIA_DNS="true"
 			DNS_ADD_COMMAND="${LE_DNS_ADD_CMD}"
 			DNS_DEL_COMMAND="${LE_DNS_DEL_CMD}"
-			DNS_WAIT=${DNS_WAIT:-10}
-			DNS_EXTRA_WAIT=${DNS_EXTRA_WAIT:-60}
+			DNS_WAIT=${DNS_WAIT:-3}
+			DNS_EXTRA_WAIT=${DNS_EXTRA_WAIT:-10}
 		_EOF_getssl_
 
 		if [ -n "${LE_AUTH_DNS_SERVER}" ]; then
@@ -543,7 +556,7 @@ done
 
 requires openssl
 requires curl
-requires nslookup
+requires drill
 requires sed
 requires grep
 requires awk
@@ -710,13 +723,13 @@ if [[ "${CHECK_REMOTE}" == "true" ]] && [ $_FORCE_RENEW -eq 0 ]; then
 						info "remote expires sooner than local ..... will attempt to upload from local"
 						echo "$EX_CERT" > "$DOMAIN_DIR/${DOMAIN}.crt.remote"
 						cert_archive "$DOMAIN_DIR/${DOMAIN}.crt.remote"
-						copy_file_to_location "domain certificate" "$CERT_FILE" "$DOMAIN_CERT_LOCATION"
-						copy_file_to_location "private key" "$DOMAIN_DIR/${DOMAIN}.key" "$DOMAIN_KEY_LOCATION"
-						copy_file_to_location "CA certificate" "$CA_CERT" "$CA_CERT_LOCATION"
+						copy_file_to_location "domain-certificate" "$CERT_FILE" "$DOMAIN_CERT_LOCATION"
+						copy_file_to_location "private-key" "$DOMAIN_DIR/${DOMAIN}.key" "$DOMAIN_KEY_LOCATION"
+						copy_file_to_location "ca-certificate" "$CA_CERT" "$CA_CERT_LOCATION"
 						cat "$CERT_FILE" "$CA_CERT" > "$TEMP_DIR/${DOMAIN}_chain.pem"
-						copy_file_to_location "full pem" "$TEMP_DIR/${DOMAIN}_chain.pem"	"$DOMAIN_CHAIN_LOCATION"
+						copy_file_to_location "chain" "$TEMP_DIR/${DOMAIN}_chain.pem"	"$DOMAIN_CHAIN_LOCATION"
 						cat "$DOMAIN_DIR/${DOMAIN}.key" "$CERT_FILE" "$CA_CERT" > "$TEMP_DIR/${DOMAIN}.pem"
-						copy_file_to_location "full pem" "$TEMP_DIR/${DOMAIN}.pem"	"$DOMAIN_PEM_LOCATION"
+						copy_file_to_location "full-pem" "$TEMP_DIR/${DOMAIN}.pem"	"$DOMAIN_PEM_LOCATION"
 						reload_service
 					fi
 				else
@@ -788,13 +801,13 @@ else
 fi
 debug "created SAN list = $SANLIST"
 
-# check nslookup for domains
+# check drill for domains
 alldomains=$(echo "$DOMAIN,$SANS" | sed "s/,/ /g")
 if [[ $VALIDATE_VIA_DNS != "true" ]]; then
 		for d in $alldomains; do
-			debug "checking nslookup for ${d}"
+			debug "checking drill for ${d}"
 			# shellcheck disable=SC2034
-			exists=$(nslookup "${d}")
+			exists=$(drill "${d}")
 			if [ "$?" != "0" ]; then
 				error_exit "DNS lookup failed for $d"
 			fi
@@ -922,9 +935,9 @@ for d in $alldomains; do
 
 		# find a primary / authoritative DNS server for the domain
 		if [ -z "$AUTH_DNS_SERVER" ]; then
-			primary_ns=$(nslookup -type=soa "${d}" ${PUBLIC_DNS_SERVER} | grep origin | awk '{print $3}')
+			primary_ns=$(drill "${d}" @${PUBLIC_DNS_SERVER} SOA | grep -A 1 ';; AUTHORITY SECTION:' | tail -n 1 | awk '{print $5}')
 			if [ -z "$primary_ns" ]; then
-				primary_ns=$(nslookup -type=soa "${d}" -debug=1 ${PUBLIC_DNS_SERVER} | grep origin | awk '{print $3}')
+				primary_ns=$(drill "${d}" @${PUBLIC_DNS_SERVER} SOA | grep -A 1 ';; ANSWER SECTION:' | tail -n 1 | awk '{print $5}')
 			fi
 		else
 			primary_ns="$AUTH_DNS_SERVER"
@@ -969,7 +982,7 @@ for d in $alldomains; do
 
 		# copy to token to acme challenge location
 		debug "copying file from $TEMP_DIR/$token to ${ACL[$dn]}"
-		copy_file_to_location "challenge token" "$TEMP_DIR/$token" "${ACL[$dn]}/$token"
+		copy_file_to_location "challenge-token" "$TEMP_DIR/$token" "${ACL[$dn]}/$token"
 
 		wellknown_url="http://$d/.well-known/acme-challenge/$token"
 		debug wellknown_url "$wellknown_url"
@@ -1022,7 +1035,7 @@ if [[ $VALIDATE_VIA_DNS == "true" ]]; then
 		ntries=0
 		check_dns="fail"
 		while [ "$check_dns" == "fail" ]; do
-			check_result=$(nslookup -type=txt "_acme-challenge.${d}" "${primary_ns}" | grep ^_acme|awk -F'"' '{ print $2}')
+			check_result=$(drill "_acme-challenge.${d}" TXT @"${primary_ns}" | grep ^_acme|awk -F'"' '{ print $2}')
 			debug result "$check_result"
 
 			if [[ "$check_result" == "$auth_key" ]]; then
@@ -1093,13 +1106,13 @@ fi
 
 # copy certs to the correct location (creating concatenated files as required)
 
-copy_file_to_location "domain certificate" "$CERT_FILE" "$DOMAIN_CERT_LOCATION"
-copy_file_to_location "private key" "$DOMAIN_DIR/${DOMAIN}.key" "$DOMAIN_KEY_LOCATION"
-copy_file_to_location "CA certificate" "$CA_CERT" "$CA_CERT_LOCATION"
+copy_file_to_location "domain-certificate" "$CERT_FILE" "$DOMAIN_CERT_LOCATION"
+copy_file_to_location "private-key" "$DOMAIN_DIR/${DOMAIN}.key" "$DOMAIN_KEY_LOCATION"
+copy_file_to_location "ca-certificate" "$CA_CERT" "$CA_CERT_LOCATION"
 cat "$CERT_FILE" "$CA_CERT" > "$TEMP_DIR/${DOMAIN}_chain.pem"
-copy_file_to_location "full pem" "$TEMP_DIR/${DOMAIN}_chain.pem"	"$DOMAIN_CHAIN_LOCATION"
+copy_file_to_location "chain" "$TEMP_DIR/${DOMAIN}_chain.pem"	"$DOMAIN_CHAIN_LOCATION"
 cat "$DOMAIN_DIR/${DOMAIN}.key" "$CERT_FILE" "$CA_CERT" > "$TEMP_DIR/${DOMAIN}.pem"
-copy_file_to_location "full pem" "$TEMP_DIR/${DOMAIN}.pem"	"$DOMAIN_PEM_LOCATION"
+copy_file_to_location "full-pem" "$TEMP_DIR/${DOMAIN}.pem"	"$DOMAIN_PEM_LOCATION"
 
 # Run reload command to restart apache / nginx or whatever system
 
