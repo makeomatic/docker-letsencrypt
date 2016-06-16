@@ -42,6 +42,7 @@ _CHECK_ALL=0
 _FORCE_RENEW=0
 _QUIET=0
 _UPGRADE=0
+_RELOAD=0
 
 # store copy of original command in case of upgrading script and re-running
 ORIGCMD="$0 $*"
@@ -166,8 +167,8 @@ copy_file_to_location() { # copies a file, using scp if required.
       # consul KV implementation
       domain=$(dirname "$from")
       agent=$(echo "$to"| awk -F: '{print "http://"$2":"$3"/v1/kv"$4}')
-      body="@$from"
-      response=$($CURL -X PUT --data "$body" "$agent/$domain/$cert")
+			debug "consul KV to $agent/$domain/$cert from @$from"
+      response=$($CURL -X PUT --data @"$from" "$agent/$domain/$cert")
       debug response "$response"
 		elif [[ "${to:0:4}" == "ftp:" ]] ; then
 			if [[ "$cert" != "challenge token" ]] ; then
@@ -513,6 +514,23 @@ write_openssl_conf() { # write out a minimal openssl conf
 	_EOF_openssl_conf_
 }
 
+move_files() {
+	# $1 -> DOMAIN
+	# $2 -> CERT_FILE
+	# $3 -> CA_CERT
+	# $4 -> TEMP_DIR
+	# $5 -> DOMAIN_DIR
+	copy_file_to_location "domain-certificate" "$2" "$DOMAIN_CERT_LOCATION"
+	copy_file_to_location "private-key" "$5/${1}.key" "$DOMAIN_KEY_LOCATION"
+	copy_file_to_location "private-key" "$5/${1}.key" "$DOMAIN_KEY_LOCATION"
+	copy_file_to_location "ca-certificate" "$3" "$CA_CERT_LOCATION"
+	cat "$2" "$3" > "$4/${1}_chain.pem"
+	copy_file_to_location "chain" "$4/${1}_chain.pem"	"$DOMAIN_CHAIN_LOCATION"
+	cat "$5/${1}.key" "$2" "$3" > "$4/${1}.pem"
+	cat "$5/${1}.key" "$2" "$3" > "$4/${1}.pem"
+	copy_file_to_location "full-pem" "$4/${1}.pem"	"$DOMAIN_PEM_LOCATION"
+}
+
 # Trap signals
 trap "signal_exit TERM" TERM HUP
 trap "signal_exit INT"	INT
@@ -532,6 +550,8 @@ while [[ -n $1 ]]; do
 		 _CHECK_ALL=1 ;;
 		-q | --quiet)
 		 _QUIET=1 ;;
+		-r | --reload)
+		 _RELOAD=1 ;;
 		-u | --upgrade)
 		 _UPGRADE=1 ;;
 		-w)
@@ -610,6 +630,7 @@ fi
 
 # Define default file locations.
 ACCOUNT_KEY="$WORKING_DIR/account.key"
+DOMAIN_DIR="$WORKING_DIR/$DOMAIN"
 DOMAIN_DIR="$WORKING_DIR/$DOMAIN"
 CERT_FILE="$DOMAIN_DIR/${DOMAIN}.crt"
 CA_CERT="$DOMAIN_DIR/chain.crt"
@@ -718,13 +739,7 @@ if [[ "${CHECK_REMOTE}" == "true" ]] && [ $_FORCE_RENEW -eq 0 ]; then
 						info "remote expires sooner than local ..... will attempt to upload from local"
 						echo "$EX_CERT" > "$DOMAIN_DIR/${DOMAIN}.crt.remote"
 						cert_archive "$DOMAIN_DIR/${DOMAIN}.crt.remote"
-						copy_file_to_location "domain-certificate" "$CERT_FILE" "$DOMAIN_CERT_LOCATION"
-						copy_file_to_location "private-key" "$DOMAIN_DIR/${DOMAIN}.key" "$DOMAIN_KEY_LOCATION"
-						copy_file_to_location "ca-certificate" "$CA_CERT" "$CA_CERT_LOCATION"
-						cat "$CERT_FILE" "$CA_CERT" > "$TEMP_DIR/${DOMAIN}_chain.pem"
-						copy_file_to_location "chain" "$TEMP_DIR/${DOMAIN}_chain.pem"	"$DOMAIN_CHAIN_LOCATION"
-						cat "$DOMAIN_DIR/${DOMAIN}.key" "$CERT_FILE" "$CA_CERT" > "$TEMP_DIR/${DOMAIN}.pem"
-						copy_file_to_location "full-pem" "$TEMP_DIR/${DOMAIN}.pem"	"$DOMAIN_PEM_LOCATION"
+						move_files "$DOMAIN" "$CERT_FILE" "$CA_CERT" "$TEMP_DIR" "$DOMAIN_DIR"
 						reload_service
 					fi
 				else
@@ -747,6 +762,12 @@ fi
 
 # if there is an existsing certificate file, check details.
 if [ -f "$CERT_FILE" ]; then
+	# reload data
+	if [[ $_RELOAD -eq 1 ]]; then
+		debug "reuploading certificates"
+		move_files "$DOMAIN" "$CERT_FILE" "$CA_CERT" "$TEMP_DIR" "$DOMAIN_DIR"
+	fi
+
 	debug "certificate $CERT_FILE exists"
 	enddate=$(openssl x509 -in "$CERT_FILE" -noout -enddate 2>/dev/null| cut -d= -f 2-)
 	debug "enddate is $enddate"
@@ -799,16 +820,15 @@ debug "created SAN list = $SANLIST"
 # check drill for domains
 alldomains=$(echo "$DOMAIN,$SANS" | sed "s/,/ /g")
 if [[ $VALIDATE_VIA_DNS != "true" ]]; then
-		for d in $alldomains; do
-			debug "checking drill for ${d}"
-			# shellcheck disable=SC2034
-			exists=$(drill "${d}")
-			if [ "$?" != "0" ]; then
-				error_exit "DNS lookup failed for $d"
-			fi
-		done
+	for d in $alldomains; do
+		debug "checking drill for ${d}"
+		# shellcheck disable=SC2034
+		exists=$(drill "${d}")
+		if [ "$?" != "0" ]; then
+			error_exit "DNS lookup failed for $d"
+		fi
+	done
 fi
-
 
 # check if domain csr exists - if not then create it
 if [ -f "$DOMAIN_DIR/${DOMAIN}.csr" ]; then
@@ -1100,17 +1120,10 @@ if [ "$IssuerData" ] ; then
 fi
 
 # copy certs to the correct location (creating concatenated files as required)
-
-copy_file_to_location "domain-certificate" "$CERT_FILE" "$DOMAIN_CERT_LOCATION"
-copy_file_to_location "private-key" "$DOMAIN_DIR/${DOMAIN}.key" "$DOMAIN_KEY_LOCATION"
-copy_file_to_location "ca-certificate" "$CA_CERT" "$CA_CERT_LOCATION"
-cat "$CERT_FILE" "$CA_CERT" > "$TEMP_DIR/${DOMAIN}_chain.pem"
-copy_file_to_location "chain" "$TEMP_DIR/${DOMAIN}_chain.pem"	"$DOMAIN_CHAIN_LOCATION"
-cat "$DOMAIN_DIR/${DOMAIN}.key" "$CERT_FILE" "$CA_CERT" > "$TEMP_DIR/${DOMAIN}.pem"
-copy_file_to_location "full-pem" "$TEMP_DIR/${DOMAIN}.pem"	"$DOMAIN_PEM_LOCATION"
+# distribute_certs
+move_files "$DOMAIN" "$CERT_FILE" "$CA_CERT" "$TEMP_DIR" "$DOMAIN_DIR"
 
 # Run reload command to restart apache / nginx or whatever system
-
 reload_service
 
 # Check if the certificate is installed correctly
