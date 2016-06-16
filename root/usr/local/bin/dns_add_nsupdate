@@ -1,9 +1,13 @@
-
 #!/bin/bash
 
 # example of script to add token to local dns using nsupdate
 
 dnskeyfile="${NS_KEYFILE_PATH}"
+
+if [ ! -n "dnskeyfile" ]; then
+  echo "NS_KEYFILE_PATH must be set"
+  exit 128
+fi
 
 fulldomain="$1"
 token="$2"

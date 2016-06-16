@@ -1,0 +1,3 @@
+#!/bin/sh
+
+/getssl.sh -q -a >> /var/log/cron.log 2>&1
